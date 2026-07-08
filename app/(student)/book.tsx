@@ -12,7 +12,7 @@ import { StatusBadge } from '@/components/shared/StatusBadge';
 import { VEHICLE_CLASS_LABELS } from '@/constants';
 import { Colors, Radii, Spacing, Typography } from '@/constants/theme';
 import { useFlightInfo } from '@/hooks/useFlightInfo';
-import { FLIGHT_NUMBER_REGEX } from '@/lib/aviationstack';
+import { FLIGHT_NUMBER_REGEX, FlightLookupError } from '@/lib/aviationstack';
 import { useRideStore } from '@/store/rideStore';
 import type { RideType, VehicleClass } from '@/types';
 import {
@@ -83,7 +83,7 @@ export default function BookScreen() {
   // scheduled earlier *today* can still already have landed by the time you
   // search for it. Booking a ride for a flight that's already down broadcasts
   // a dead offer to every driver, so block it here rather than after the fact.
-  const flightAlreadyLanded = !!flight && new Date(flight.estimated_arrival).getTime() < Date.now();
+  const flightAlreadyLanded = !!flight && flight.estimatedLanding.getTime() < Date.now();
 
   // Step 2 — luggage
   const [largeBags, setLargeBags] = useState(0);
@@ -245,19 +245,31 @@ export default function BookScreen() {
             loading={isSearching}
           />
 
-          {flightError ? <Text style={styles.error}>{flightError.message}</Text> : null}
+          {flightError instanceof FlightLookupError && flightError.code === 'wrong_destination' ? (
+            <Card>
+              <Text style={styles.error}>
+                This flight doesn't arrive in Winnipeg. Please enter your final flight to Winnipeg (YWG).
+              </Text>
+              <Text style={styles.connectionPrompt}>
+                Flying with connections? Only enter the last flight on your itinerary — the one that lands in
+                Winnipeg.
+              </Text>
+            </Card>
+          ) : flightError instanceof FlightLookupError && flightError.code === 'not_found' ? (
+            <Text style={styles.error}>Flight not found. Please check your flight number and travel date.</Text>
+          ) : flightError ? (
+            <Text style={styles.error}>{flightError.message}</Text>
+          ) : null}
 
           {flight ? (
             <>
               <Card>
-                <Text style={styles.flightAirline}>Final flight: {flight.flight_number}</Text>
+                <Text style={styles.flightAirline}>✈️ {flight.airline}</Text>
                 <Text style={styles.flightDetail}>
-                  {flight.origin.name} ({flight.origin.code}) → {flight.destination.name} ({flight.destination.code})
+                  {flight.originCity} ({flight.originCode}) → Winnipeg ({flight.destinationCode})
                 </Text>
-                <Text style={styles.flightDetail}>
-                  Departing: {safeFormat(flight.estimated_departure, 'h:mm a')} · Landing: ~
-                  {safeFormat(flight.estimated_arrival, 'h:mm a')}
-                </Text>
+                <Text style={styles.flightDetail}>Departing: {format(flight.departureTime, 'h:mm a')}</Text>
+                <Text style={styles.flightDetail}>Estimated landing: {format(flight.estimatedLanding, 'h:mm a')}</Text>
                 <View style={styles.flightStatusRow}>
                   <StatusBadge label={flight.status} variant={flight.status === 'landed' ? 'success' : 'info'} />
                 </View>
@@ -274,10 +286,22 @@ export default function BookScreen() {
                   </Text>
                 </Card>
               )}
+              <View style={styles.navRow}>
+                <Button
+                  label="Try a different flight"
+                  variant="secondary"
+                  onPress={() => setSearchParams(null)}
+                  style={styles.navButton}
+                />
+                <Button
+                  label="Confirm"
+                  onPress={() => setStep(2)}
+                  disabled={flightAlreadyLanded}
+                  style={styles.navButton}
+                />
+              </View>
             </>
           ) : null}
-
-          <Button label="Continue" onPress={() => setStep(2)} disabled={!flight || flightAlreadyLanded} />
         </>
       ) : null}
 
@@ -412,12 +436,12 @@ export default function BookScreen() {
             <View style={styles.reviewRow}>
               <Text style={styles.reviewLabel}>Flight</Text>
               <Text style={styles.reviewValue}>
-                {flight.flight_number} on {format(date, 'MMM d, yyyy')}
+                {flight.flightNumber} on {format(date, 'MMM d, yyyy')}
               </Text>
             </View>
             <View style={styles.reviewRow}>
               <Text style={styles.reviewLabel}>Landing</Text>
-              <Text style={styles.reviewValue}>{safeFormat(flight.estimated_arrival, 'h:mm a')}</Text>
+              <Text style={styles.reviewValue}>{format(flight.estimatedLanding, 'h:mm a')}</Text>
             </View>
             <View style={styles.reviewRow}>
               <Text style={styles.reviewLabel}>Luggage</Text>

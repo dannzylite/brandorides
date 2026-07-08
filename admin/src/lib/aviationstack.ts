@@ -1,33 +1,75 @@
-// Lean lookup-only client for the admin panel — just "what's this flight's
-// current status," not the full booking-validation flow the mobile app's
-// lib/aviationstack.ts implements (format validation, YWG-destination
-// enforcement, etc.). Same API, same key.
-export interface LiveFlightStatus {
-  status: string
-  estimatedArrival: string | null
-  actualArrival: string | null
+const BASE_URL = 'http://api.aviationstack.com/v1'
+const WINNIPEG_IATA = 'YWG'
+
+export interface FlightValidationResult {
+  found: boolean
+  isWinnipegBound: boolean
+  airline: string | null
+  originCity: string | null
+  originCode: string | null
+  departureTime: string | null // ISO
+  estimatedLanding: string | null // ISO
+  flightStatus: string | null
+  error: string | null
 }
 
-export async function fetchLiveFlightStatus(flightNumber: string, date: string): Promise<LiveFlightStatus | null> {
-  const apiKey = import.meta.env.VITE_AVIATIONSTACK_API_KEY
-  if (!apiKey) return null
+const EMPTY_RESULT: Omit<FlightValidationResult, 'error'> = {
+  found: false,
+  isWinnipegBound: false,
+  airline: null,
+  originCity: null,
+  originCode: null,
+  departureTime: null,
+  estimatedLanding: null,
+  flightStatus: null,
+}
+
+// The admin's on-demand equivalent of the mobile app's validateFlight() —
+// used only when an admin explicitly clicks "Check Flight" while
+// reviewing a missed-connection report, never automatically. flight_date
+// is a paid-tier-only AviationStack filter (confirmed live elsewhere in
+// this project) — fetch by flight_iata alone and filter client-side.
+export async function checkFlightForAdmin(flightNumber: string, date: string): Promise<FlightValidationResult> {
+  const apiKey = import.meta.env.VITE_AVIATIONSTACK_API_KEY as string | undefined
+  if (!apiKey) {
+    return { ...EMPTY_RESULT, error: 'Flight lookup is not configured.' }
+  }
+
+  const url = `${BASE_URL}/flights?access_key=${apiKey}&flight_iata=${encodeURIComponent(flightNumber.trim().toUpperCase())}`
 
   try {
-    const response = await fetch(
-      `https://api.aviationstack.com/v1/flights?access_key=${apiKey}&flight_iata=${encodeURIComponent(flightNumber)}`
-    )
-    const body = await response.json()
-    const results: { flight_date: string; flight_status: string; arrival: { estimated: string; actual: string | null } }[] =
-      body.data ?? []
-    const match = results.find((f) => f.flight_date === date) ?? results[0]
-    if (!match) return null
+    const res = await fetch(url)
+    const body = await res.json()
+
+    if (body.error) {
+      return { ...EMPTY_RESULT, error: body.error.message ?? 'Flight lookup failed.' }
+    }
+
+    const results = (body.data ?? []) as Array<{
+      flight_date: string
+      flight_status: string
+      departure: { airport: string; iata: string; scheduled: string; estimated: string }
+      arrival: { iata: string; scheduled: string; estimated: string }
+      airline: { name: string }
+    }>
+
+    const match = results.find((f) => f.flight_date === date)
+    if (!match) {
+      return { ...EMPTY_RESULT, error: `No schedule data for this flight on ${date}.` }
+    }
 
     return {
-      status: match.flight_status,
-      estimatedArrival: match.arrival.estimated,
-      actualArrival: match.arrival.actual,
+      found: true,
+      isWinnipegBound: match.arrival.iata === WINNIPEG_IATA,
+      airline: match.airline.name,
+      originCity: match.departure.airport,
+      originCode: match.departure.iata,
+      departureTime: match.departure.estimated ?? match.departure.scheduled,
+      estimatedLanding: match.arrival.estimated ?? match.arrival.scheduled,
+      flightStatus: match.flight_status,
+      error: null,
     }
   } catch {
-    return null
+    return { ...EMPTY_RESULT, error: 'Could not reach the flight lookup service.' }
   }
 }

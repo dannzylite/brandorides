@@ -100,7 +100,7 @@ export const useRideStore = create<RideState>((set, get) => ({
     const luggageUnits = largeBags * 2 + carryOns + (oversizedItems ? 4 : 0);
 
     const vehicleClass: VehicleClass = recommendedVehicleClass(luggageUnits) ?? 'truck';
-    const landing = new Date(data.flightInfo.estimated_arrival);
+    const landing = data.flightInfo.estimatedLanding;
     const price = calculatePrice(data.rideType, vehicleClass, oversizedItems);
 
     set({ isLoading: true });
@@ -109,14 +109,19 @@ export const useRideStore = create<RideState>((set, get) => ({
 
       if (!rideId) {
         const totalSeats = data.rideType === 'solo' ? 1 : VEHICLE_CAPACITY[vehicleClass].max_passengers;
+        const driverLeaveTime = new Date(landing.getTime() - 60 * 60000);
         const { data: newRide, error: rideError } = await supabase
           .from('rides')
           .insert({
             ride_type: data.rideType,
             departure_date: data.departureDate,
-            flight_number: data.flightInfo.flight_number,
-            flight_origin: data.flightInfo.origin.name,
-            estimated_landing: data.flightInfo.estimated_arrival,
+            flight_number: data.flightInfo.flightNumber,
+            flight_origin: data.flightInfo.originCity,
+            flight_origin_city: data.flightInfo.originCity,
+            flight_origin_code: data.flightInfo.originCode,
+            departure_time: data.flightInfo.departureTime.toISOString(),
+            estimated_landing: landing.toISOString(),
+            driver_leave_time: driverLeaveTime.toISOString(),
             vehicle_class_required: vehicleClass,
             total_seats: totalSeats,
             base_fare_per_seat: price.baseFare,
@@ -139,6 +144,16 @@ export const useRideStore = create<RideState>((set, get) => ({
       });
 
       if (passengerError) throw passengerError;
+
+      // Audit trail for the one booking-time AviationStack call — RLS
+      // permits this once the ride_passengers row above exists.
+      await supabase.from('flight_checks').insert({
+        ride_id: rideId,
+        check_type: 'validation',
+        flight_status: data.flightInfo.status,
+        estimated_landing_at_check: landing.toISOString(),
+        action_taken: 'none',
+      });
 
       get().resetBookingDraft();
       await get().fetchMyActiveRide();

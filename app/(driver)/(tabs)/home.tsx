@@ -4,8 +4,10 @@ import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Button } from '@/components/shared/Button';
 import { Card } from '@/components/shared/Card';
+import { FlightStatus } from '@/components/shared/FlightStatus';
 import { ScreenContainer } from '@/components/shared/ScreenContainer';
 import { StatusBadge } from '@/components/shared/StatusBadge';
+import { LeaveTimeDisplay } from '@/components/driver/LeaveTimeDisplay';
 import { Colors, Spacing, Typography } from '@/constants/theme';
 import {
   addBlackoutDate,
@@ -19,7 +21,7 @@ import {
 } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
 import type { DriverAvailability, Ride, RidePassenger, TripOffer } from '@/types';
-import { calculateDriverLeaveTime, safeFormat } from '@/utils';
+import { safeFormat } from '@/utils';
 
 export default function DriverHomeScreen() {
   const { profile, driverProfile } = useAuthStore();
@@ -141,11 +143,9 @@ export default function DriverHomeScreen() {
             <Text style={styles.tripDate}>{safeFormat(upcomingTrip.departure_date, 'EEEE, MMM d')}</Text>
             <SummaryRow label="Students" value={String(upcomingTrip.filled_seats)} />
             <SummaryRow label="Earnings" value={`$${(upcomingTripEarnings / 100).toFixed(2)}`} />
-            <SummaryRow
-              label="Leave By"
-              value={safeFormat(calculateDriverLeaveTime(upcomingTrip.estimated_landing)?.toISOString(), 'h:mm a')}
-            />
           </Card>
+          <FlightStatus ride={upcomingTrip} />
+          <LeaveTimeDisplay ride={upcomingTrip} />
         </View>
       ) : null}
 

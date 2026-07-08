@@ -2,6 +2,8 @@ import { supabase } from '@/lib/supabase'
 import type {
   DriverAvailability,
   DriverProfile,
+  FlightCheck,
+  MissedConnectionRequest,
   NotificationLog,
   OfferStatus,
   Profile,
@@ -235,4 +237,111 @@ export function getDocumentUrl(
     .from(bucket)
     .createSignedUrl(path, expiresIn)
     .then(({ data, error }) => (error ? null : data.signedUrl))
+}
+
+async function notifyAllOnRide(rideId: string, type: string, data: Record<string, unknown>): Promise<void> {
+  const [{ data: ride }, { data: passengers }] = await Promise.all([
+    supabase.from('rides').select('driver_id').eq('id', rideId).maybeSingle(),
+    supabase.from('ride_passengers').select('student_id').eq('ride_id', rideId),
+  ])
+
+  const rows: { ride_id: string; type: string; recipient_role: 'student' | 'driver'; data: Record<string, unknown> }[] = []
+  if (ride?.driver_id) rows.push({ ride_id: rideId, type, recipient_role: 'driver', data })
+  for (const p of (passengers ?? []) as { student_id: string }[]) {
+    rows.push({ ride_id: rideId, type, recipient_role: 'student', data: { ...data, student_id: p.student_id } })
+  }
+  if (rows.length > 0) await supabase.from('pending_notifications').insert(rows)
+}
+
+export interface FlightUpdateInput {
+  // A missed-connection resolution replaces the flight entirely, not just
+  // its timing — these are optional so a plain delay/cancellation update
+  // on the *same* flight can omit them and leave the identity untouched.
+  flightNumber?: string
+  originCity?: string
+  originCode?: string
+  departureDate?: string // YYYY-MM-DD
+  departureTime?: string // ISO
+  estimatedLanding: string // ISO
+  flightStatus: Ride['flight_status']
+  notes: string
+}
+
+// The manual fallback for when the API returns 'unknown', or a student
+// reports a missed connection — this is the admin's own equivalent of
+// what flight-monitor does automatically, minus the AviationStack call
+// (the admin already has the corrected number from validateFlight or
+// from the student's report).
+export async function updateFlightStatus(rideId: string, input: FlightUpdateInput): Promise<void> {
+  const driverLeaveTime = new Date(new Date(input.estimatedLanding).getTime() - 60 * 60000).toISOString()
+
+  const rideUpdate: Partial<Ride> = {
+    estimated_landing: input.estimatedLanding,
+    driver_leave_time: driverLeaveTime,
+    flight_status: input.flightStatus,
+  }
+  if (input.flightNumber) rideUpdate.flight_number = input.flightNumber
+  if (input.originCity) {
+    rideUpdate.flight_origin = input.originCity
+    rideUpdate.flight_origin_city = input.originCity
+  }
+  if (input.originCode) rideUpdate.flight_origin_code = input.originCode
+  if (input.departureDate) rideUpdate.departure_date = input.departureDate
+  if (input.departureTime) rideUpdate.departure_time = input.departureTime
+  if (input.flightStatus === 'cancelled') rideUpdate.status = 'cancelled'
+  if (input.flightStatus === 'landed') rideUpdate.actual_landing = new Date().toISOString()
+
+  const { error: rideError } = await supabase.from('rides').update(rideUpdate).eq('id', rideId)
+  if (rideError) throw rideError
+
+  if (input.flightStatus === 'landed') {
+    await supabase.from('ride_passengers').update({ student_status: 'landed' }).eq('ride_id', rideId)
+  }
+
+  await supabase.from('flight_checks').insert({
+    ride_id: rideId,
+    check_type: 'manual_admin_update',
+    flight_status: input.flightStatus,
+    estimated_landing_at_check: input.estimatedLanding,
+    action_taken: input.flightStatus === 'cancelled' ? 'cancelled' : 'updated_time',
+    raw_response: { notes: input.notes, source: 'admin_manual_update' },
+  })
+
+  if (input.flightStatus === 'delayed') {
+    await notifyAllOnRide(rideId, 'FLIGHT_DELAYED', { message: 'Your flight time was updated by BrandoRides.', new_estimated_landing: input.estimatedLanding })
+  } else if (input.flightStatus === 'landed') {
+    await notifyAllOnRide(rideId, 'FLIGHT_LANDED', { message: 'Your flight has landed.' })
+  } else if (input.flightStatus === 'cancelled') {
+    await notifyAllOnRide(rideId, 'FLIGHT_CANCELLED', { message: 'This flight has been cancelled.' })
+  }
+
+  // Applying an update *is* how a missed-connection report gets resolved —
+  // auto-close any still-pending ones for this ride rather than leaving a
+  // separate, easy-to-forget "Mark Resolved" click as the only way.
+  await supabase.from('missed_connection_requests').update({ status: 'resolved' }).eq('ride_id', rideId).eq('status', 'pending')
+}
+
+export async function fetchMissedConnectionRequests(rideId: string): Promise<MissedConnectionRequest[]> {
+  const { data, error } = await supabase
+    .from('missed_connection_requests')
+    .select('*')
+    .eq('ride_id', rideId)
+    .order('submitted_at', { ascending: false })
+  if (error) throw error
+  return (data ?? []) as MissedConnectionRequest[]
+}
+
+export async function resolveMissedConnectionRequest(id: string): Promise<void> {
+  const { error } = await supabase.from('missed_connection_requests').update({ status: 'resolved' }).eq('id', id)
+  if (error) throw error
+}
+
+export async function fetchFlightChecks(rideId: string): Promise<FlightCheck[]> {
+  const { data, error } = await supabase
+    .from('flight_checks')
+    .select('*')
+    .eq('ride_id', rideId)
+    .order('checked_at', { ascending: false })
+  if (error) throw error
+  return (data ?? []) as FlightCheck[]
 }

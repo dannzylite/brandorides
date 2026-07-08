@@ -1,5 +1,6 @@
-const BASE_URL = 'https://api.aviationstack.com/v1/flights';
+const BASE_URL = process.env.EXPO_PUBLIC_AVIATIONSTACK_BASE_URL ?? 'http://api.aviationstack.com/v1';
 const WINNIPEG_IATA = 'YWG';
+const DELAYED_THRESHOLD_MINUTES = 10;
 
 // Airline IATA codes are 2 alphanumeric characters, not always 2 letters
 // (e.g. Flair is "F8", UPS is "5X", Cargojet is "W8").
@@ -15,6 +16,10 @@ export type FlightLookupErrorCode =
   | 'network_error'
   | 'unknown';
 
+// Thrown by validateFlight() — the booking flow needs a specific reason
+// to show the right error card. checkFlightStatus() never throws this;
+// it collapses every failure mode into a single 'unknown' result instead,
+// since it runs unattended from a cron tick with no one to catch it.
 export class FlightLookupError extends Error {
   code: FlightLookupErrorCode;
 
@@ -25,19 +30,24 @@ export class FlightLookupError extends Error {
   }
 }
 
-export type FlightStatus = 'scheduled' | 'active' | 'landed' | 'cancelled' | 'incident' | 'diverted';
+export type RawFlightState = 'scheduled' | 'active' | 'landed' | 'cancelled' | 'incident' | 'diverted';
 
 export interface FlightInfo {
-  flight_number: string;
+  flightNumber: string;
   airline: string;
-  origin: { name: string; code: string };
-  destination: { name: string; code: string };
-  scheduled_departure: string;
-  estimated_departure: string;
-  scheduled_arrival: string;
-  estimated_arrival: string;
-  actual_arrival: string | null;
-  status: FlightStatus;
+  originCity: string;
+  originCode: string;
+  destinationCode: 'YWG';
+  departureTime: Date;
+  estimatedLanding: Date;
+  status: RawFlightState;
+}
+
+export interface FlightStatus {
+  status: 'on_time' | 'delayed' | 'cancelled' | 'landed' | 'unknown';
+  estimatedLanding: Date | null;
+  actualLanding: Date | null;
+  delayMinutes: number;
 }
 
 interface AviationStackAirport {
@@ -64,7 +74,11 @@ interface AviationStackResponse {
 
 const RATE_LIMIT_CODES = new Set(['usage_limit_reached', 'rate_limit_reached', 'function_access_restricted']);
 
-export async function fetchFlightInfo(flightNumber: string, date: string): Promise<FlightInfo> {
+// Shared HTTP + validation logic for both public functions below. Always
+// throws FlightLookupError on any failure — checkFlightStatus() catches
+// and downgrades that to 'unknown' rather than letting it propagate,
+// since it must never throw into an unattended cron tick.
+async function fetchWinnipegFlight(flightNumber: string, date: string): Promise<AviationStackFlight> {
   const normalized = flightNumber.trim().toUpperCase();
 
   if (!FLIGHT_NUMBER_REGEX.test(normalized)) {
@@ -79,7 +93,11 @@ export async function fetchFlightInfo(flightNumber: string, date: string): Promi
     throw new FlightLookupError('not_configured', 'Flight lookup is not configured yet.');
   }
 
-  const url = `${BASE_URL}?access_key=${apiKey}&flight_iata=${encodeURIComponent(normalized)}`;
+  // flight_date as a query param is a paid-tier-only filter on
+  // AviationStack's free plan — sending it returns a hard
+  // function_access_restricted error (confirmed live). Fetch by
+  // flight_iata alone and filter the results by date client-side below.
+  const url = `${BASE_URL}/flights?access_key=${apiKey}&flight_iata=${encodeURIComponent(normalized)}`;
 
   let response: Response;
   try {
@@ -115,28 +133,10 @@ export async function fetchFlightInfo(flightNumber: string, date: string): Promi
     );
   }
 
-  if (match.arrival.iata !== WINNIPEG_IATA) {
-    throw new FlightLookupError('wrong_destination', 'This app only supports Winnipeg arrivals.');
-  }
-
-  return {
-    flight_number: match.flight.iata,
-    airline: match.airline.name,
-    origin: { name: match.departure.airport, code: match.departure.iata },
-    // Destination is always Winnipeg here (guaranteed by the check above),
-    // so use a clean display name rather than AviationStack's official
-    // arrival airport string.
-    destination: { name: 'Winnipeg', code: match.arrival.iata },
-    scheduled_departure: match.departure.scheduled,
-    estimated_departure: match.departure.estimated ?? match.departure.scheduled,
-    scheduled_arrival: match.arrival.scheduled,
-    estimated_arrival: match.arrival.estimated ?? match.arrival.scheduled,
-    actual_arrival: match.arrival.actual,
-    status: normalizeStatus(match.flight_status),
-  };
+  return match;
 }
 
-function normalizeStatus(status: string): FlightStatus {
+function normalizeState(status: string): RawFlightState {
   switch (status) {
     case 'scheduled':
     case 'active':
@@ -147,5 +147,64 @@ function normalizeStatus(status: string): FlightStatus {
       return status;
     default:
       return 'scheduled';
+  }
+}
+
+// --- Call 1: booking time ---------------------------------------------
+export async function validateFlight(flightNumber: string, date: string): Promise<FlightInfo> {
+  const match = await fetchWinnipegFlight(flightNumber, date);
+
+  if (match.arrival.iata !== WINNIPEG_IATA) {
+    throw new FlightLookupError(
+      'wrong_destination',
+      "This flight doesn't arrive in Winnipeg. Please enter your final flight to Winnipeg (YWG)."
+    );
+  }
+
+  return {
+    flightNumber: match.flight.iata,
+    airline: match.airline.name,
+    originCity: match.departure.airport,
+    originCode: match.departure.iata,
+    destinationCode: 'YWG',
+    departureTime: new Date(match.departure.estimated ?? match.departure.scheduled),
+    estimatedLanding: new Date(match.arrival.estimated ?? match.arrival.scheduled),
+    status: normalizeState(match.flight_status),
+  };
+}
+
+// --- Call 2: departure time ---------------------------------------------
+// Never throws — every failure mode (API down, rate limited, not found,
+// wrong destination) collapses into a single 'unknown' result, since
+// this runs from an unattended cron tick with no one to catch an error.
+// 'unknown' is the caller's signal to alert the admin for a manual check.
+export async function checkFlightStatus(flightNumber: string, date: string): Promise<FlightStatus> {
+  try {
+    const match = await fetchWinnipegFlight(flightNumber, date);
+
+    if (match.flight_status === 'cancelled') {
+      return { status: 'cancelled', estimatedLanding: null, actualLanding: null, delayMinutes: 0 };
+    }
+
+    const scheduledArrival = new Date(match.arrival.scheduled);
+    const estimatedArrival = new Date(match.arrival.estimated ?? match.arrival.scheduled);
+    const actualArrival = match.arrival.actual ? new Date(match.arrival.actual) : null;
+    const delayMinutes = Math.max(
+      0,
+      Math.round(((actualArrival ?? estimatedArrival).getTime() - scheduledArrival.getTime()) / 60000)
+    );
+
+    if (match.flight_status === 'landed' || actualArrival) {
+      return { status: 'landed', estimatedLanding: estimatedArrival, actualLanding: actualArrival, delayMinutes };
+    }
+
+    return {
+      status: delayMinutes >= DELAYED_THRESHOLD_MINUTES ? 'delayed' : 'on_time',
+      estimatedLanding: estimatedArrival,
+      actualLanding: null,
+      delayMinutes,
+    };
+  } catch {
+    return { status: 'unknown', estimatedLanding: null, actualLanding: null, delayMinutes: 0 };
   }
 }

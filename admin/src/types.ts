@@ -69,8 +69,12 @@ export interface Ride {
   departure_date: string
   flight_number: string
   flight_origin: string
+  flight_origin_city: string | null
+  flight_origin_code: string | null
+  departure_time: string | null
   estimated_landing: string
   actual_landing: string | null
+  flight_status: 'scheduled' | 'departed' | 'landed' | 'delayed' | 'cancelled' | 'unknown'
   driver_id: string | null
   vehicle_class_required: VehicleClass
   total_seats: number
@@ -110,6 +114,29 @@ export interface TripOffer {
   offered_at: string
   responded_at: string | null
   expires_at: string
+}
+
+export interface MissedConnectionRequest {
+  id: string
+  ride_id: string
+  student_id: string
+  old_flight_number: string
+  new_flight_number: string
+  new_date: string
+  submitted_at: string
+  status: 'pending' | 'resolved'
+}
+
+export interface FlightCheck {
+  id: string
+  ride_id: string
+  checked_at: string
+  check_type: 'validation' | 'pre_departure_check' | 'departure_check' | 'manual_admin_update'
+  flight_status: string
+  estimated_landing_at_check: string | null
+  actual_landing_at_check: string | null
+  delay_minutes: number
+  action_taken: string
 }
 
 export interface DriverAvailability {

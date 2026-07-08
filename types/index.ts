@@ -81,8 +81,12 @@ export interface Ride {
   departure_date: string
   flight_number: string
   flight_origin: string
+  flight_origin_city: string | null
+  flight_origin_code: string | null
+  departure_time: string | null
   estimated_landing: string
   actual_landing: string | null
+  flight_status: 'scheduled' | 'departed' | 'landed' | 'delayed' | 'cancelled' | 'unknown'
   driver_id: string | null
   vehicle_class_required: VehicleClass
   total_seats: number

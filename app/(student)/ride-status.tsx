@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
+import { format } from 'date-fns';
 import { Ionicons } from '@expo/vector-icons';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import MapView, { Marker } from 'react-native-maps';
 import { Button } from '@/components/shared/Button';
 import { Card } from '@/components/shared/Card';
+import { FlightStatus } from '@/components/shared/FlightStatus';
+import { Input } from '@/components/shared/Input';
 import { PlaceholderNote } from '@/components/shared/PlaceholderNote';
 import { ScreenContainer } from '@/components/shared/ScreenContainer';
 import { StatusBadge } from '@/components/shared/StatusBadge';
 import { Colors, Radii, Spacing, Typography } from '@/constants/theme';
-import { useFlightInfo } from '@/hooks/useFlightInfo';
+import { FLIGHT_NUMBER_REGEX } from '@/lib/aviationstack';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
 import { useRideStore } from '@/store/rideStore';
@@ -128,7 +132,12 @@ export default function RideStatusScreen() {
     return () => clearInterval(interval);
   }, [ride?.driver_id, ride?.status]);
 
-  const { data: liveFlight } = useFlightInfo(ride?.flight_number ?? '', ride?.departure_date ?? '', !!ride);
+  const [showMissedConnectionForm, setShowMissedConnectionForm] = useState(false);
+  const [missedConnectionSubmitted, setMissedConnectionSubmitted] = useState(false);
+  const [newFlightNumber, setNewFlightNumber] = useState('');
+  const [newFlightDate, setNewFlightDate] = useState(new Date());
+  const [showNewFlightDatePicker, setShowNewFlightDatePicker] = useState(false);
+  const [missedConnectionSubmitting, setMissedConnectionSubmitting] = useState(false);
 
   const landingDate = ride ? new Date(ride.estimated_landing) : null;
   const pickupWindowEnd = safeFormat(
@@ -161,22 +170,25 @@ export default function RideStatusScreen() {
     );
   };
 
-  const handleMissedConnection = () => {
-    Alert.alert(
-      'Missed your connection?',
-      "This cancels your current booking so you can search for your new flight. We'll only need the flight that actually gets you to Winnipeg.",
-      [
-        { text: 'Not Yet', style: 'cancel' },
-        {
-          text: 'Cancel & Rebook',
-          style: 'destructive',
-          onPress: async () => {
-            await useRideStore.getState().cancelBooking();
-            router.replace('/(student)/book');
-          },
-        },
-      ]
-    );
+  const handleSubmitMissedConnection = async () => {
+    if (!ride) return;
+    setMissedConnectionSubmitting(true);
+    try {
+      const { error } = await supabase.rpc('submit_missed_connection_request', {
+        p_ride_id: ride.id,
+        p_new_flight_number: newFlightNumber.trim().toUpperCase(),
+        p_new_date: format(newFlightDate, 'yyyy-MM-dd'),
+      });
+      if (error) throw error;
+      setShowMissedConnectionForm(false);
+      setMissedConnectionSubmitted(true);
+      setNewFlightNumber('');
+      setNewFlightDate(new Date());
+    } catch (err) {
+      Alert.alert('Something went wrong', err instanceof Error ? err.message : 'Please try again.');
+    } finally {
+      setMissedConnectionSubmitting(false);
+    }
   };
 
   const handleRate = async (stars: number) => {
@@ -206,6 +218,70 @@ export default function RideStatusScreen() {
       </ScreenContainer>
     );
   }
+
+  const missedConnectionValid = FLIGHT_NUMBER_REGEX.test(newFlightNumber.trim());
+
+  const missedConnectionSection = missedConnectionSubmitted ? (
+    <Card>
+      <Text style={styles.connectionPrompt}>
+        We've received your update. Our team will confirm your new arrival time within 30 minutes. Your driver has
+        been notified there may be a change.
+      </Text>
+    </Card>
+  ) : showMissedConnectionForm ? (
+    <Card>
+      <Text style={styles.searchingTitle}>Update Your Flight</Text>
+      <Input
+        label="New Winnipeg flight number"
+        value={newFlightNumber}
+        onChangeText={setNewFlightNumber}
+        placeholder="e.g. AC855"
+        autoCapitalize="characters"
+        error={newFlightNumber.trim().length > 0 && !missedConnectionValid ? 'Format: airline code + flight number, e.g. AC855' : undefined}
+      />
+      <Pressable style={styles.dateField} onPress={() => setShowNewFlightDatePicker(true)}>
+        <Text style={styles.dateLabel}>New travel date</Text>
+        <Text style={styles.dateValue}>{format(newFlightDate, 'MMM d, yyyy')}</Text>
+      </Pressable>
+      {showNewFlightDatePicker ? (
+        <DateTimePicker
+          value={newFlightDate}
+          mode="date"
+          display="default"
+          minimumDate={new Date()}
+          onChange={(_event, selected) => {
+            setShowNewFlightDatePicker(false);
+            if (selected) setNewFlightDate(selected);
+          }}
+        />
+      ) : null}
+      <Text style={styles.connectionPrompt}>
+        Enter your new final flight to Winnipeg. We'll update your driver and send new arrival time.
+      </Text>
+      <View style={styles.navRow}>
+        <Button
+          label="Cancel"
+          variant="secondary"
+          onPress={() => setShowMissedConnectionForm(false)}
+          style={styles.navButton}
+          disabled={missedConnectionSubmitting}
+        />
+        <Button
+          label="Submit Update"
+          onPress={handleSubmitMissedConnection}
+          disabled={!missedConnectionValid}
+          loading={missedConnectionSubmitting}
+          style={styles.navButton}
+        />
+      </View>
+    </Card>
+  ) : (
+    <Button
+      label="I missed my connection / plans changed"
+      variant="secondary"
+      onPress={() => setShowMissedConnectionForm(true)}
+    />
+  );
 
   return (
     <ScreenContainer title="My Ride" edges={['top', 'left', 'right']}>
@@ -244,7 +320,7 @@ export default function RideStatusScreen() {
             <SummaryRow label="Dropoff" value={ride.dropoff_area} />
             <SummaryRow label="Luggage" value={`${passenger.large_bags} large, ${passenger.carry_ons} carry-on`} />
           </Card>
-          <Button label="I Missed My Connection" variant="secondary" onPress={handleMissedConnection} />
+          {missedConnectionSection}
         </>
       ) : null}
 
@@ -266,12 +342,7 @@ export default function RideStatusScreen() {
             />
             <SummaryRow label="Plate" value={driverProfile?.vehicle_plate ?? '—'} />
           </Card>
-          {liveFlight ? (
-            <Card>
-              <SummaryRow label="Flight Status" value={liveFlight.status} />
-              <SummaryRow label="Estimated Landing" value={safeFormat(liveFlight.estimated_arrival, 'h:mm a')} />
-            </Card>
-          ) : null}
+          <FlightStatus ride={ride} />
           <Card>
             <SummaryRow label="Estimated Pickup" value={`${safeFormat(ride.estimated_landing, 'h:mm a')} – ${pickupWindowEnd}`} />
           </Card>
@@ -283,6 +354,7 @@ export default function RideStatusScreen() {
               onPress={() => Linking.openURL(`tel:${driverInfo.phone}`)}
             />
           ) : null}
+          {missedConnectionSection}
         </>
       ) : null}
 
@@ -309,9 +381,9 @@ export default function RideStatusScreen() {
           <Button
             label="I'm at Arrivals"
             onPress={handleAtArrivals}
-            disabled={liveFlight?.status !== 'landed'}
+            disabled={ride.flight_status !== 'landed'}
           />
-          {liveFlight?.status !== 'landed' ? (
+          {ride.flight_status !== 'landed' ? (
             <Text style={styles.hint}>This unlocks once your flight has landed.</Text>
           ) : null}
         </>
@@ -371,6 +443,34 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
 }
 
 const styles = StyleSheet.create({
+  navRow: {
+    flexDirection: 'row',
+    gap: Spacing.md,
+  },
+  navButton: {
+    flex: 1,
+  },
+  dateField: {
+    backgroundColor: Colors.inputBackground,
+    borderRadius: Radii.card,
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.md,
+    marginTop: Spacing.sm,
+  },
+  dateLabel: {
+    ...Typography.caption,
+    color: Colors.subtext,
+    marginBottom: Spacing.xs,
+  },
+  dateValue: {
+    ...Typography.body,
+    color: Colors.text,
+  },
+  connectionPrompt: {
+    ...Typography.caption,
+    color: Colors.subtext,
+    marginTop: Spacing.sm,
+  },
   row: {
     flexDirection: 'row',
     justifyContent: 'space-between',
