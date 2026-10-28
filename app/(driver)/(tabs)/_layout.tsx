@@ -17,7 +17,7 @@ export default function DriverTabsLayout() {
         options={{
           title: 'Home',
           tabBarIcon: ({ color, focused }) => (
-            <Ionicons name={focused ? 'home' : 'home-outline'} size={22} color={color} />
+            <Ionicons name={focused ? 'home' : 'home-outline'} size={22} color={typeof color === 'string' ? color : undefined} />
           ),
         }}
       />
@@ -26,7 +26,7 @@ export default function DriverTabsLayout() {
         options={{
           title: 'Availability',
           tabBarIcon: ({ color, focused }) => (
-            <Ionicons name={focused ? 'calendar' : 'calendar-outline'} size={22} color={color} />
+            <Ionicons name={focused ? 'calendar' : 'calendar-outline'} size={22} color={typeof color === 'string' ? color : undefined} />
           ),
         }}
       />
@@ -35,7 +35,7 @@ export default function DriverTabsLayout() {
         options={{
           title: 'Earnings',
           tabBarIcon: ({ color, focused }) => (
-            <Ionicons name={focused ? 'cash' : 'cash-outline'} size={22} color={color} />
+            <Ionicons name={focused ? 'cash' : 'cash-outline'} size={22} color={typeof color === 'string' ? color : undefined} />
           ),
         }}
       />
@@ -44,7 +44,7 @@ export default function DriverTabsLayout() {
         options={{
           title: 'Profile',
           tabBarIcon: ({ color, focused }) => (
-            <Ionicons name={focused ? 'person' : 'person-outline'} size={22} color={color} />
+            <Ionicons name={focused ? 'person' : 'person-outline'} size={22} color={typeof color === 'string' ? color : undefined} />
           ),
         }}
       />

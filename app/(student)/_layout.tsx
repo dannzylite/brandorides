@@ -30,7 +30,7 @@ export default function StudentLayout() {
         options={{
           title: 'Home',
           tabBarIcon: ({ color, focused }) => (
-            <Ionicons name={focused ? 'home' : 'home-outline'} size={22} color={color} />
+            <Ionicons name={focused ? 'home' : 'home-outline'} size={22} color={typeof color === 'string' ? color : undefined} />
           ),
         }}
       />
@@ -39,7 +39,7 @@ export default function StudentLayout() {
         options={{
           title: 'Book',
           tabBarIcon: ({ color, focused }) => (
-            <Ionicons name={focused ? 'add-circle' : 'add-circle-outline'} size={22} color={color} />
+            <Ionicons name={focused ? 'add-circle' : 'add-circle-outline'} size={22} color={typeof color === 'string' ? color : undefined} />
           ),
         }}
       />
@@ -48,7 +48,7 @@ export default function StudentLayout() {
         options={{
           title: 'My Ride',
           tabBarIcon: ({ color, focused }) => (
-            <Ionicons name={focused ? 'car' : 'car-outline'} size={22} color={color} />
+            <Ionicons name={focused ? 'car' : 'car-outline'} size={22} color={typeof color === 'string' ? color : undefined} />
           ),
         }}
       />
@@ -57,7 +57,7 @@ export default function StudentLayout() {
         options={{
           title: 'Profile',
           tabBarIcon: ({ color, focused }) => (
-            <Ionicons name={focused ? 'person' : 'person-outline'} size={22} color={color} />
+            <Ionicons name={focused ? 'person' : 'person-outline'} size={22} color={typeof color === 'string' ? color : undefined} />
           ),
         }}
       />
